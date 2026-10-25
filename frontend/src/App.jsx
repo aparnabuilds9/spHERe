@@ -1,6 +1,7 @@
 
 import { useState } from 'react'
 import './App.css'
+import PhysicalSafety from './components/PhysicalSafety'
 
 const NAV = [
   { id: 'home', icon: '◈', label: 'Overview' },
@@ -400,26 +401,7 @@ function App() {
           )}
 
           {page === 'physical' && (
-            <section className="physical-grid">
-              <article className="tool-main-card">
-                <div className="card-kicker">03 / PERSONAL SAFETY PLANNING</div>
-                <h2>Plan with information you can verify.</h2>
-                <p className="card-description">This prototype does not have a verified, live incident database or validated route-risk model. Use these practical checks when planning a journey.</p>
-                <div className="checklist">
-                  <div><span>01</span><p><strong>Review your route</strong><br />Prefer familiar routes and public places where you can ask for help.</p></div>
-                  <div><span>02</span><p><strong>Check current travel information</strong><br />Use trusted local sources for transport availability and disruptions.</p></div>
-                  <div><span>03</span><p><strong>Choose a trusted contact</strong><br />Tell someone you trust about your plans if that feels safe.</p></div>
-                  <div><span>04</span><p><strong>Keep a backup plan</strong><br />Identify a public place or staffed location you can go to if needed.</p></div>
-                </div>
-                <button className="primary-button" onClick={() => goTo('emergency')}>Open emergency options <span>↗</span></button>
-              </article>
-              <aside className="tool-side-card">
-                <span className="side-card-icon">⌖</span>
-                <h3>About location sharing</h3>
-                <p>SPHERe only requests your browser location after you choose the location action on the emergency screen.</p>
-                <div className="side-tip"><strong>Transparency matters</strong><p>No live route risk score, nearby incident lookup, or automatic tracking is claimed by this prototype.</p></div>
-              </aside>
-            </section>
+            <PhysicalSafety goTo={goTo} />
           )}
 
           {page === 'emergency' && (

@@ -1,19 +1,31 @@
 
+
+import re
 from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+APP_VERSION = "0.2.0"
 
 app = FastAPI(
     title="SPHERe Safety Assistant",
-    description="A prototype for physical and digital safety support.",
-    version="0.1.0",
+    description=(
+        "An explainable prototype for digital and physical safety support."
+    ),
+    version=APP_VERSION,
 )
 
+# Supports Vite on either common local hostname.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
@@ -24,85 +36,219 @@ class SafetyRequest(BaseModel):
     message: str = Field(min_length=1, max_length=3000)
     category: Literal["auto", "physical", "digital"] = "auto"
 
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Please enter a message to analyze.")
+        return value
+
+
+# Each rule has a stable key, user-facing label, severity and phrases.
+# These are transparent rules, not a trained ML model.
+DIGITAL_RULES = [
+    {
+        "key": "credential_request",
+        "label": "Request for passwords or OTPs",
+        "severity": "high",
+        "phrases": [
+            "share your password",
+            "send your password",
+            "enter your password",
+            "share otp",
+            "send otp",
+            "tell me your otp",
+            "verification code",
+            "login credentials",
+        ],
+    },
+    {
+        "key": "urgent_payment",
+        "label": "Urgent or pressured payment request",
+        "severity": "medium",
+        "phrases": [
+            "send money",
+            "urgent payment",
+            "pay immediately",
+            "transfer money now",
+            "account will be blocked",
+            "payment is overdue",
+            "act immediately",
+        ],
+    },
+    {
+        "key": "threat_or_blackmail",
+        "label": "Threat, blackmail or image-abuse language",
+        "severity": "high",
+        "phrases": [
+            "i will hurt you",
+            "i know where you live",
+            "i will leak your photos",
+            "i will share your photos",
+            "i will post your photos",
+            "send me photos or else",
+            "do what i say or else",
+            "i will expose you",
+        ],
+    },
+    {
+        "key": "impersonation_or_secrecy",
+        "label": "Possible impersonation or secrecy pressure",
+        "severity": "medium",
+        "phrases": [
+            "i am from your bank",
+            "i am customer support",
+            "keep this secret",
+            "do not tell anyone",
+            "don't tell anyone",
+            "pretend to be",
+        ],
+    },
+]
+
+URL_PATTERN = re.compile(
+    r"(?i)\b(?:https?://|www\.)[^\s<>'\"]+"
+    r"|\b[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s<>'\"]*)?"
+)
+
+SHORTENER_DOMAINS = {
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "is.gd",
+    "cutt.ly",
+    "rb.gy",
+    "shorturl.at",
+}
+
+
+def extract_urls(text: str) -> list[str]:
+    """Extract URLs for local analysis; never fetch or open them."""
+    return URL_PATTERN.findall(text)
+
+
+def get_domain(url: str) -> str:
+    candidate = url.strip().rstrip(".,!?;:)")
+    if candidate.lower().startswith("www."):
+        candidate = "https://" + candidate
+    elif not candidate.lower().startswith(("http://", "https://")):
+        candidate = "https://" + candidate
+
+    try:
+        return (urlparse(candidate).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
 
 def analyze_digital_text(message: str) -> dict:
-    text = message.lower()
+    text = " ".join(message.lower().split())
+    findings = []
+    signals = {}
 
-    signals = {
-        "urgent_payment": any(
-            phrase in text
-            for phrase in ["send money", "urgent payment", "pay immediately"]
-        ),
-        "credential_request": any(
-            phrase in text
-            for phrase in [
-                "share your password",
-                "enter your password",
-                "share otp",
-                "send otp",
-            ]
-        ),
-        "suspicious_link": any(
-            marker in text for marker in ["http://", "bit.ly/"]
-        ),
-        "threat_or_harassment": any(
-            phrase in text
-            for phrase in [
-                "i will hurt you",
-                "i know where you live",
-                "i will leak your photos",
-                "i will share your photos",
-            ]
-        ),
-    }
+    for rule in DIGITAL_RULES:
+        matched = any(phrase in text for phrase in rule["phrases"])
+        signals[rule["key"]] = matched
 
-    findings = [name for name, found in signals.items() if found]
+        if matched:
+            findings.append({
+                "key": rule["key"],
+                "label": rule["label"],
+                "severity": rule["severity"],
+                "evidence": "A configured warning phrase was found.",
+            })
+
+    urls = extract_urls(message)
+    domains = [get_domain(url) for url in urls]
+    suspicious_domains = sorted({
+        domain for domain in domains
+        if domain in SHORTENER_DOMAINS
+    })
+
+    signals["contains_link"] = bool(urls)
+    signals["known_shortener_detected"] = bool(suspicious_domains)
+
+    if suspicious_domains:
+        findings.append({
+            "key": "shortened_link",
+            "label": "Link uses a known URL-shortening service",
+            "severity": "medium",
+            "evidence": (
+                "A shortened link can hide its destination; "
+                "this alone does not prove the link is malicious."
+            ),
+        })
+
+    # This is a conservative heuristic, not a verdict on a message.
+    high_count = sum(
+        item["severity"] == "high" for item in findings
+    )
+    medium_count = sum(
+        item["severity"] == "medium" for item in findings
+    )
+
+    if high_count:
+        risk_level = "high"
+        assessment = "Important warning signs detected"
+    elif medium_count:
+        risk_level = "medium"
+        assessment = "Some warning signs detected"
+    else:
+        risk_level = "undetermined"
+        assessment = "No configured warning patterns detected"
 
     advice = [
-        "Do not share passwords or OTPs with unverified contacts.",
-        "Verify suspicious requests through an independent, trusted channel.",
-        "A lack of detected warning signs does not guarantee a message is safe.",
+        "Never share passwords, OTPs, or verification codes with unverified contacts.",
+        "Verify payment or account requests using an independent, trusted channel.",
+        "Inspect a link's destination before opening it; do not enter credentials on an unverified site.",
+        "A message can be harmful even when this prototype detects no warning signs.",
     ]
 
-    if signals["threat_or_harassment"]:
+    if signals.get("threat_or_blackmail"):
         advice.insert(
             0,
-            "Consider preserving relevant messages and seeking support from "
-            "a trusted person. If you are in immediate danger, seek local help.",
+            "Consider preserving relevant messages and seeking help from a trusted person. "
+            "If you are in immediate danger, contact local emergency services.",
         )
 
     return {
+        "analysis_type": "rule_based",
+        "risk_level": risk_level,
+        "assessment": assessment,
         "signals": signals,
-        "findings": findings,
-        "assessment": (
-            "Potential warning signs detected"
-            if findings
-            else "No configured warning patterns detected"
-        ),
+        "findings": [item["label"] for item in findings],
+        "detailed_findings": findings,
         "advice": advice,
+        "link_count": len(urls),
+        "shortener_domains": suspicious_domains,
         "limitation": (
-            "This is a rule-based prototype, not a trained AI model. "
-            "It can miss threats or flag harmless messages."
+            "This prototype uses configured text rules, not a trained AI model. "
+            "It does not visit links, verify identities, or determine whether a "
+            "message is definitively safe or malicious."
         ),
     }
+
 
 
 def create_physical_safety_plan() -> dict:
     return {
+        "analysis_type": "safety_guidance",
+        "risk_level": "undetermined",
+        "assessment": "Safety guidance prepared",
         "steps": [
-            "If you are in immediate danger, move toward a safer public place "
-            "if possible and contact local emergency services.",
-            "Consider contacting someone you trust.",
-            "Share your location only with a recipient you trust and after "
-            "checking what information will be shared.",
+            "If you are in immediate danger, move toward a safer public place if possible.",
+            "Contact local emergency services if urgent help is needed.",
+            "Consider contacting a trusted person and agree on a safe way to communicate.",
+            "Before sharing location details, check who will receive them and what will be shared.",
         ],
         "message_draft": (
-            "I need support. Please contact me when you can."
+            "I need support. Please contact me when you can. "
+            "I will share my location if I choose to."
         ),
         "requires_user_action": True,
         "note": (
-            "This prototype has not sent an alert, shared a location, "
-            "or contacted emergency services."
+            "No alert was sent, location was shared, or emergency service was contacted "
+            "by this backend."
         ),
     }
 
@@ -115,12 +261,24 @@ def choose_tool(request: SafetyRequest) -> str:
         return "physical_safety_planner"
 
     text = request.message.lower()
-    digital_signals = [
-        "message", "link", "password", "otp",
-        "phishing", "blackmail", "harass", "threat", "photo",
-    ]
 
-    if any(word in text for word in digital_signals):
+    digital_indicators = (
+        "message",
+        "link",
+        "password",
+        "otp",
+        "phishing",
+        "blackmail",
+        "harass",
+        "threat",
+        "photo",
+        "payment",
+        "bank",
+        "account",
+        "scam",
+    )
+
+    if any(term in text for term in digital_indicators):
         return "digital_safety_analyzer"
 
     return "physical_safety_planner"
@@ -131,13 +289,16 @@ def root():
     return {
         "project": "SPHERe",
         "status": "running",
-        "version": "0.1.0",
+        "version": APP_VERSION,
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "version": APP_VERSION,
+    }
 
 
 @app.post("/api/safety")
@@ -155,7 +316,8 @@ def handle_safety_request(request: SafetyRequest):
         "result": result,
         "execution": {
             "planned": True,
-            "tool_executed": True,
+            "analysis_completed": True,
+            "analysis_type": result["analysis_type"],
             "external_actions_taken": False,
         },
     }
