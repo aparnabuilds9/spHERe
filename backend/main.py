@@ -1,5 +1,3 @@
-
-
 import re
 from typing import Literal
 from urllib.parse import urlparse
@@ -42,6 +40,18 @@ class SafetyRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("Please enter a message to analyze.")
+        return value
+
+
+class PrivacyAnalyzeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Please provide text to analyze.")
         return value
 
 
@@ -121,6 +131,45 @@ SHORTENER_DOMAINS = {
     "rb.gy",
     "shorturl.at",
 }
+
+INDIAN_PHONE_REGEX = re.compile(r"(?<!\w)(?:\+?91[\s-]?)?[6-9]\d{9}(?!\w)")
+GENERAL_PHONE_REGEX = re.compile(r"(?<!\w)(?:\+?\d{1,3}[\s-]?)?\(?\d{2,4}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}(?!\w)")
+EMAIL_REGEX = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+COORD_DECIMAL_REGEX = re.compile(
+    r"[-+]?(?:[1-8]?\d(?:\.\d{3,8})|90(?:\.0{3,8})?)[,\s]+[-+]?(?:180(?:\.0{3,8})?|(?:1[0-7]\d|[1-9]?\d)(?:\.\d{3,8}))"
+)
+PIN_CODE_REGEX = re.compile(r"(?<!\w)(?:PIN|Pin\s*Code|Postal\s*Code|Pincode)?[\s:]*([1-9][0-9]{2}\s?[0-9]{3})(?!\w)", re.I)
+
+ADDRESS_KEYWORDS = [
+    "road", "marg", "street", "nagar", "colony", "sector", "block", "phase",
+    "chowk", "lane", "gali", "vihar", "enclave", "society", "apartment",
+    "flat no", "house no", "near", "opposite", "behind", "beside"
+]
+
+
+def mask_str(value: str, keep_start: int = 3, keep_end: int = 2) -> str:
+    v = value.strip()
+    if len(v) <= keep_start + keep_end:
+        return "•" * len(v)
+    return f"{v[:keep_start]}{'•' * (len(v) - keep_start - keep_end)}{v[-keep_end:]}"
+
+
+def mask_phone(phone: str) -> str:
+    cleaned = phone.strip()
+    if len(cleaned) <= 4:
+        return "••••"
+    prefix = cleaned[: min(4, len(cleaned) - 4)]
+    suffix = cleaned[-2:]
+    return f"{prefix}{'•' * (len(cleaned) - len(prefix) - len(suffix))}{suffix}"
+
+
+def mask_email(email: str) -> str:
+    parts = email.strip().split("@")
+    if len(parts) != 2:
+        return "••••@••••"
+    u, d = parts
+    masked_u = f"{u[:2]}{'•' * max(3, len(u) - 2)}" if len(u) > 2 else f"{u[:1]}•••"
+    return f"{masked_u}@{d}"
 
 
 def extract_urls(text: str) -> list[str]:
@@ -229,7 +278,6 @@ def analyze_digital_text(message: str) -> dict:
     }
 
 
-
 def create_physical_safety_plan() -> dict:
     return {
         "analysis_type": "safety_guidance",
@@ -298,6 +346,101 @@ def health():
     return {
         "status": "healthy",
         "version": APP_VERSION,
+    }
+
+
+@app.post("/api/privacy/analyze")
+def analyze_privacy_data(request: PrivacyAnalyzeRequest):
+    text = request.text
+    findings = []
+    seen = set()
+
+    for match in EMAIL_REGEX.finditer(text):
+        raw = match.group().strip()
+        if raw.lower() not in seen:
+            seen.add(raw.lower())
+            findings.append({
+                "category": "Personal Identifier (Email)",
+                "raw": raw,
+                "masked": mask_email(raw),
+                "severity": "Medium",
+                "explanation": "Exposes email address, posing risks of phishing and credential stuffing.",
+                "suggested_action": "Censor the email handle or draw a redaction bar over it.",
+            })
+
+    for regex in (INDIAN_PHONE_REGEX, GENERAL_PHONE_REGEX):
+        for match in regex.finditer(text):
+            raw = match.group().strip()
+            digits = re.sub(r"\D", "", raw)
+            if len(digits) >= 7 and digits not in seen:
+                seen.add(digits)
+                findings.append({
+                    "category": "Personal Identifier (Phone Number)",
+                    "raw": raw,
+                    "masked": mask_phone(raw),
+                    "severity": "High",
+                    "explanation": "Direct mobile/phone number can be exploited for unsolicited calls or identity linking.",
+                    "suggested_action": "Redact the phone number before publishing.",
+                })
+
+    for match in COORD_DECIMAL_REGEX.finditer(text):
+        raw = match.group().strip()
+        if raw not in seen:
+            seen.add(raw)
+            findings.append({
+                "category": "Geographic Coordinates",
+                "raw": raw,
+                "masked": re.sub(r"(\d+\.\d{2})\d+", r"\g<1>•••", raw),
+                "severity": "High",
+                "explanation": "Precise latitude and longitude pinpoint an exact building or street location.",
+                "suggested_action": "Remove coordinates and avoid sharing unredacted map pins.",
+            })
+
+    for match in PIN_CODE_REGEX.finditer(text):
+        raw = match.group().strip()
+        if raw not in seen:
+            seen.add(raw)
+            findings.append({
+                "category": "Postal Location (PIN Code)",
+                "raw": raw,
+                "masked": mask_str(raw, 2, 2),
+                "severity": "Medium",
+                "explanation": "Isolates your neighborhood or postal delivery zone.",
+                "suggested_action": "Mask postal code to prevent neighborhood-level localization.",
+            })
+
+    text_lower = text.lower()
+    for kw in ADDRESS_KEYWORDS:
+        if kw in text_lower and f"addr_{kw}" not in seen:
+            seen.add(f"addr_{kw}")
+            findings.append({
+                "category": "Address / Landmark Clue",
+                "raw": kw,
+                "masked": kw,
+                "severity": "Medium",
+                "explanation": f"Mentions location keyword '{kw}', which may help reconstruct transit or home addresses.",
+                "suggested_action": "Censor surrounding street, building, or area names.",
+            })
+            break
+
+    high_count = sum(1 for f in findings if f["severity"] == "High")
+    medium_count = sum(1 for f in findings if f["severity"] == "Medium")
+    low_count = sum(1 for f in findings if f["severity"] == "Low")
+
+    return {
+        "project": "SPHERe",
+        "has_exposures": len(findings) > 0,
+        "summary": {
+            "total": len(findings),
+            "high": high_count,
+            "medium": medium_count,
+            "low": low_count,
+        },
+        "findings": findings,
+        "limitation": (
+            "Rule-based regex scanner. Cannot evaluate visual artifacts or physical landmarks. "
+            "Absence of findings does not certify complete privacy."
+        ),
     }
 
 
