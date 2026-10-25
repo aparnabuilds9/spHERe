@@ -1,7 +1,9 @@
-
 import { useState } from 'react'
 import './App.css'
 import PhysicalSafety from './components/PhysicalSafety'
+import TrustedCircleSOS from './components/TrustedCircleSOS'
+import ScreenshotPrivacyDetector from './components/ScreenshotPrivacyDetector'
+import { analyzePrivacyText } from './utils/privacyDetector'
 
 const NAV = [
   { id: 'home', icon: '◈', label: 'Overview' },
@@ -25,16 +27,16 @@ const FEATURES = [
     id: 'privacy',
     number: '02',
     title: 'Privacy sentinel',
-    description: 'Check text for exposed phone numbers and email addresses.',
+    description: 'Inspect screenshots for GPS leaks, censor sensitive areas, and audit text.',
     icon: '◎',
     tone: 'sage',
-    action: 'Check my privacy',
+    action: 'Inspect privacy',
   },
   {
     id: 'physical',
     number: '03',
     title: 'Physical safety',
-    description: 'Access safety resources and plan your next steps.',
+    description: 'Access safety resources, crime data insights, and plan your next steps.',
     icon: '⌖',
     tone: 'sand',
     action: 'Explore resources',
@@ -43,25 +45,22 @@ const FEATURES = [
     id: 'emergency',
     number: '04',
     title: 'Emergency assistance',
-    description: 'Access emergency calling and optional location sharing.',
+    description: 'Trusted circle SOS dispatch, live location map links, and 112 helpline.',
     icon: '✳',
     tone: 'plum',
-    action: 'Open assistance',
+    action: 'Open emergency circle',
   },
 ]
 
 function App() {
   const [page, setPage] = useState('home')
+  const [privacyMode, setPrivacyMode] = useState('screenshot')
   const [message, setMessage] = useState('')
   const [analysis, setAnalysis] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [privacyText, setPrivacyText] = useState('')
   const [privacyChecked, setPrivacyChecked] = useState(false)
-  const [location, setLocation] = useState(null)
-  const [locationError, setLocationError] = useState('')
-  const [contact, setContact] = useState('')
-  const [copyStatus, setCopyStatus] = useState('')
 
   const goTo = (nextPage) => {
     setPage(nextPage)
@@ -110,77 +109,21 @@ function App() {
     setPrivacyChecked(true)
   }
 
-  const emailMatches = privacyText.match(
-    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
-  ) || []
-
-  const phoneMatches = privacyText.match(
-    /(?<!\w)(?:\+?91[\s-]?)?[6-9]\d{9}(?!\w)/g
-  ) || []
-
-  const privacyFindings = [
-    ...new Set(emailMatches.map((value) => value.trim())),
-    ...new Set(phoneMatches.map((value) => value.trim())),
-  ]
+  // Enhanced privacy analysis for text
+  const textAnalysisResult = analyzePrivacyText(privacyText)
+  const privacyFindings = textAnalysisResult.findings
 
   const redactedText = privacyText
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[EMAIL REDACTED]')
+    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi, '[EMAIL REDACTED]')
     .replace(/(?<!\w)(?:\+?91[\s-]?)?[6-9]\d{9}(?!\w)/g, '[PHONE REDACTED]')
-
-  const requestLocation = () => {
-    setLocationError('')
-
-    if (!navigator.geolocation) {
-      setLocationError('Location access is not supported by this browser.')
-      return
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        setLocation({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        })
-      },
-      () => {
-        setLocationError(
-          'Location was not shared. Check browser permissions or continue without it.'
-        )
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
-    )
-  }
-
-  const copyLocation = async () => {
-    if (!location) return
-
-    const link = `https://www.google.com/maps?q=${location.latitude},${location.longitude}`
-
-    try {
-      await navigator.clipboard.writeText(link)
-      setCopyStatus('Map link copied. Share it only with someone you trust.')
-    } catch {
-      setCopyStatus(`Copy this map link: ${link}`)
-    }
-  }
-
-  const callContact = () => {
-    const cleaned = contact.replace(/[^\d+]/g, '')
-
-    if (cleaned.length < 7) {
-      setCopyStatus('Enter a valid contact number first.')
-      return
-    }
-
-    window.location.href = `tel:${cleaned}`
-  }
+    .replace(/[-+]?(?:[1-8]?\d(?:\.\d{3,8})|90(?:\.0{3,8})?)[,\s]+[-+]?(?:180(?:\.0{3,8})?|(?:1[0-7]\d|[1-9]?\d)(?:\.\d{3,8}))/g, '[COORDINATES REDACTED]')
 
   const pageTitles = {
     home: ['Your safety, your choices.', 'A private space to assess concerns, protect personal information, and find your next step.'],
     threats: ['Threat intelligence', 'Look for warning signs in a suspicious message before deciding what to do.'],
-    privacy: ['Privacy sentinel', 'Check text for common personal information before sharing it.'],
+    privacy: ['Privacy sentinel', 'Inspect screenshots for GPS coordinates, censor sensitive regions, and audit text.'],
     physical: ['Physical safety', 'Use practical safety resources without relying on unverified danger scores.'],
-    emergency: ['Emergency assistance', 'If you are in immediate danger in India, call 112 if it is safe to do so.'],
+    emergency: ['Emergency assistance', 'Trusted circle emergency dispatch, location alerts, and 112 assistance.'],
   }
 
   return (
@@ -351,53 +294,83 @@ function App() {
           )}
 
           {page === 'privacy' && (
-            <section className="tool-layout">
-              <div className="tool-main-card">
-                <div className="card-kicker">02 / TEXT PRIVACY CHECK</div>
-                <h2>Before you share, check what's visible.</h2>
-                <p className="card-description">Paste text to find common Indian mobile-number patterns and email addresses. This check runs in your browser.</p>
-                <form className="tool-form" onSubmit={scanPrivacy}>
-                  <label htmlFor="privacy-text">Text to check</label>
-                  <textarea
-                    id="privacy-text"
-                    value={privacyText}
-                    onChange={(event) => {
-                      setPrivacyText(event.target.value)
-                      setPrivacyChecked(false)
-                    }}
-                    placeholder="Paste text here to check for phone numbers or email addresses…"
-                    rows={7}
-                    maxLength={5000}
-                  />
-                  <div className="input-meta"><span>Text is checked locally by this page.</span><span>{privacyText.length}/5000</span></div>
-                  <button className="primary-button" type="submit">Check for exposed details <span>↗</span></button>
-                </form>
-
-                {privacyChecked && (
-                  <div className="privacy-results" aria-live="polite">
-                    <h3>{privacyFindings.length ? `${privacyFindings.length} detected match(es)` : 'No matching phone numbers or emails found'}</h3>
-                    <p>Pattern matching is imperfect. Review the text yourself; other personal details may not be detected.</p>
-                    {privacyFindings.length > 0 && (
-                      <>
-                        <ul className="finding-list">
-                          {privacyFindings.map((finding, index) => <li key={`${finding}-${index}`}>{finding.replace(/./g, '•')}</li>)}
-                        </ul>
-                        <label className="preview-label" htmlFor="redacted-preview">Redacted text preview</label>
-                        <textarea id="redacted-preview" readOnly value={redactedText} rows={5} />
-                        <p className="result-limitation">Preview only. No image or file has been modified.</p>
-                      </>
-                    )}
-                  </div>
-                )}
+            <div className="privacy-page-wrapper">
+              <div className="sub-mode-toggle">
+                <button
+                  type="button"
+                  className={`sub-mode-btn ${privacyMode === 'screenshot' ? 'active' : ''}`}
+                  onClick={() => setPrivacyMode('screenshot')}
+                >
+                  <span>🖼️</span> Screenshot & EXIF Sentinel
+                </button>
+                <button
+                  type="button"
+                  className={`sub-mode-btn ${privacyMode === 'text' ? 'active' : ''}`}
+                  onClick={() => setPrivacyMode('text')}
+                >
+                  <span>📝</span> Quick Text Privacy Check
+                </button>
               </div>
 
-              <aside className="tool-side-card">
-                <span className="side-card-icon">◎</span>
-                <h3>Your personal information deserves care.</h3>
-                <p>Before posting a screenshot, check names, phone numbers, email addresses, addresses, account details, and visible notifications.</p>
-                <div className="side-tip"><strong>Prototype limitation</strong><p>Screenshot OCR, image redaction, and photo GPS metadata inspection are not implemented in this screen.</p></div>
-              </aside>
-            </section>
+              {privacyMode === 'screenshot' ? (
+                <ScreenshotPrivacyDetector />
+              ) : (
+                <section className="tool-layout">
+                  <div className="tool-main-card">
+                    <div className="card-kicker">02 / TEXT PRIVACY AUDIT</div>
+                    <h2>Before you share, check what's visible.</h2>
+                    <p className="card-description">Paste text to find phone numbers, email addresses, coordinates, and address clues. Runs locally in your browser.</p>
+                    <form className="tool-form" onSubmit={scanPrivacy}>
+                      <label htmlFor="privacy-text">Text to check</label>
+                      <textarea
+                        id="privacy-text"
+                        value={privacyText}
+                        onChange={(event) => {
+                          setPrivacyText(event.target.value)
+                          setPrivacyChecked(false)
+                        }}
+                        placeholder="Paste text here to check for phone numbers, email addresses, coordinates, or postal addresses…"
+                        rows={7}
+                        maxLength={5000}
+                      />
+                      <div className="input-meta"><span>Text is checked locally by this page.</span><span>{privacyText.length}/5000</span></div>
+                      <button className="primary-button" type="submit">Check for exposed details <span>↗</span></button>
+                    </form>
+
+                    {privacyChecked && (
+                      <div className="privacy-results" aria-live="polite">
+                        <h3>{privacyFindings.length ? `${privacyFindings.length} detected potential leak(s)` : 'No matching phone numbers or emails found'}</h3>
+                        <p>Pattern matching is imperfect. Review the text yourself; other personal details may not be detected.</p>
+                        {privacyFindings.length > 0 && (
+                          <>
+                            <ul className="finding-list">
+                              {privacyFindings.map((finding) => (
+                                <li key={finding.id}>
+                                  <strong>{finding.category} ({finding.severity}):</strong> {finding.masked}
+                                </li>
+                              ))}
+                            </ul>
+                            <label className="preview-label" htmlFor="redacted-preview">Redacted text preview</label>
+                            <textarea id="redacted-preview" readOnly value={redactedText} rows={5} />
+                            <p className="result-limitation">Preview only. Copy and use the redacted text where desired.</p>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <aside className="tool-side-card">
+                    <span className="side-card-icon">◎</span>
+                    <h3>Your personal information deserves care.</h3>
+                    <p>Before posting a message or comment, verify that phone numbers, email addresses, account handles, and location landmarks are removed.</p>
+                    <div className="side-tip">
+                      <strong>Screenshot Inspection Available</strong>
+                      <p>Switch to the "Screenshot & EXIF Sentinel" tab above to analyze uploaded images and draw redactions on screenshots.</p>
+                    </div>
+                  </aside>
+                </section>
+              )}
+            </div>
           )}
 
           {page === 'physical' && (
@@ -405,53 +378,7 @@ function App() {
           )}
 
           {page === 'emergency' && (
-            <section className="emergency-layout">
-              <div className="emergency-banner">
-                <div>
-                  <div className="card-kicker">IMMEDIATE ASSISTANCE</div>
-                  <h2>Help is a valid next step.</h2>
-                  <p>If you are in immediate danger in India, call 112 when it is safe to do so. Do not wait for this prototype to respond.</p>
-                </div>
-                <a className="call-emergency" href="tel:112">Call 112 <span>↗</span></a>
-              </div>
-
-              <div className="emergency-grid">
-                <article className="tool-main-card">
-                  <span className="feature-icon rose">☎</span>
-                  <h3>Call someone you trust</h3>
-                  <p className="card-description">Enter a number to open your device's calling app. Your number is not saved by this page.</p>
-                  <form className="tool-form" onSubmit={(event) => { event.preventDefault(); callContact() }}>
-                    <label htmlFor="trusted-contact">Trusted contact number</label>
-                    <input id="trusted-contact" value={contact} onChange={(event) => { setContact(event.target.value); setCopyStatus('') }} placeholder="Enter a phone number" autoComplete="tel" />
-                    <button className="primary-button" type="submit">Open phone app <span>↗</span></button>
-                  </form>
-                </article>
-
-                <article className="tool-main-card">
-                  <span className="feature-icon sage">⌖</span>
-                  <h3>Share your location</h3>
-                  <p className="card-description">Choose to request your current location. It will not be requested until you press the button.</p>
-                  {!location ? (
-                    <button className="secondary-button" onClick={requestLocation}>Request my location</button>
-                  ) : (
-                    <div className="location-card">
-                      <span className="location-status">LOCATION RECEIVED</span>
-                      <p>Latitude: {location.latitude.toFixed(5)}</p>
-                      <p>Longitude: {location.longitude.toFixed(5)}</p>
-                      <button className="secondary-button" onClick={copyLocation}>Copy map link</button>
-                    </div>
-                  )}
-                  {locationError && <p className="error" role="alert">{locationError}</p>}
-                </article>
-              </div>
-
-              {copyStatus && <p className="status-message" role="status">{copyStatus}</p>}
-
-              <div className="disclaimer-strip">
-                <span className="disclaimer-symbol">i</span>
-                <p>Calling requires your device to support the phone link. Location sharing only copies a map link after you request your location. This page does not automatically contact anyone or send messages.</p>
-              </div>
-            </section>
+            <TrustedCircleSOS />
           )}
         </div>
 
